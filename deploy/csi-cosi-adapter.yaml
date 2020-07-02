@@ -1,0 +1,281 @@
+################
+#     CRDs     #
+################
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bucketrequests.cosi.io
+spec:
+  group: cosi.io
+  names:
+    kind: BucketRequest
+    singular: bucketrequest
+    plural: bucketrequests
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                protocol:
+                  type: string
+                  nullable: true
+                bucketPrefix:
+                  type: string
+                  nullable: true
+                bucketClassName:
+                  type: string
+                  nullable: true
+                bucketName:
+                  type: string
+                  nullable: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: buckets.cosi.io
+spec:
+  group: cosi.io
+  names:
+    kind: Bucket
+    singular: bucket
+    plural: buckets
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                provisioner:
+                  type: string
+                releasePolicy:
+                  type: string
+                anonymousAccessMode:
+                  type: string
+                permittedNamespaces:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      uuid:
+                        type: string
+                protocol:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    s3:
+                      type: object
+                      properties:
+                        endpoint:
+                          type: string
+                        bucketName:
+                          type: string
+                        region:
+                          type: string
+                        signatureVersion:
+                          type: string
+                paramters:
+                  type: object
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bucketaccesses.cosi.io
+spec:
+  group: cosi.io
+  names:
+    kind: BucketAccess
+    singular: bucketaccess
+    plural: bucketaccesses
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                bucketAccessRequestName:
+                  type: string
+                  nullable: true
+                bucketAccessRequestNamespace:
+                  type: string
+                  nullable: true
+                serviceAccountName:
+                  type: string
+                  nullable: true
+                keySecretName:
+                  type: string
+                  nullable: true
+                provisioner:
+                  type: string
+                  nullable: true
+                parameters:
+                  type: object
+                  nullable: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bucketaccessrequests.cosi.io
+spec:
+  group: cosi.io
+  names:
+    kind: BucketAccessRequest
+    singular: bucketaccessrequest
+    plural: bucketaccessrequests
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                serviceAccountName:
+                  type: string
+                  nullable: true
+                accessSecretName:
+                  type: string
+                  nullable: true
+                bucket:
+                  type: string
+                  nullable: true
+                bucketAccessClassName:
+                  type: string
+                  nullable: true
+                bucketAccessName:
+                  type: string
+                  nullable: true
+################
+#     Driver   #
+################
+---
+apiVersion: storage.k8s.io/v1beta1
+kind: CSIDriver
+metadata:
+  name: csi-cosi-adapter
+spec:
+  volumeLifecycleModes: # added in Kubernetes 1.16, this field is beta
+    - Ephemeral
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cosi-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csi-cosi-adapter
+  namespace: cosi-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: csi-cosi
+rules:
+  - apiGroups:
+      - cosi.io
+    resources:
+      - "*"
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: csi-cosi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: csi-cosi
+subjects:
+  - kind: ServiceAccount
+    name: csi-cosi-adapter
+    namespace: cosi-system
+---
+kind: Pod  # todo convert to DS
+apiVersion: v1
+metadata:
+  name: csi-cosi-adapter
+  namespace: cosi-system
+spec:
+  serviceAccountName: csi-cosi-adapter
+  containers:
+    - image: quay.io/jcope/csi-cosi-adapter
+      name: csi-cosi-adapter
+      imagePullPolicy: Never
+      args:
+        - "--nodeid=$(CSI_COSI_NODE_ID)"
+        - "--listen=/csi/csi.sock"
+        - "--protocol=unix"
+      env:
+        - name: CSI_COSI_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumeMounts:
+        - name: socket-dir
+          mountPath: /csi
+        - name: mountpoint-dir
+          mountPath: /var/lib/kubelet/pods
+          mountPropagation: Bidirectional
+      securityContext:
+        privileged: true
+    - name: node-driver-registrar
+      image: quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
+      imagePullPolicy: IfNotPresent
+      args:
+        - "--csi-address=/csi/csi.sock"
+        - "--kubelet-registration-path=/var/lib/kubelet/plugins/csi-cosi-adapter/csi.sock"
+      lifecycle:
+        preStop:
+          exec:
+            command: ["/bin/sh", "-c", "rm -rf /registration/csi-cosi-adapter-reg.sock /registration/csi-cosi-adapter-reg.sock"]
+      volumeMounts:
+        - name: socket-dir
+          mountPath: /csi
+        - name: registration-dir
+          mountPath: /registration
+      securityContext:
+        privileged: true
+  volumes:
+    - name: registration-dir
+      hostPath:
+        path: /var/lib/kubelet/plugins_registry/
+        type: Directory
+    - name: socket-dir
+      hostPath:
+        path: /var/lib/kubelet/plugins/csi-cosi-adapter/
+        type: DirectoryOrCreate
+    - name: mountpoint-dir
+      hostPath:
+        path: /var/lib/kubelet/pods
+        type: Directory

@@ -1,0 +1,108 @@
+################
+#     CRs     #
+################
+---
+apiVersion: cosi.io/v1alpha1
+kind: BucketRequest
+metadata:
+  name: test-request
+  namespace: default
+spec:
+  protocol: s3
+  bucketPrefix: my-bucket
+  bucketClassName: bucket-class
+  bucketName: test-bucket
+---
+apiVersion: cosi.io/v1alpha1
+kind: Bucket
+metadata:
+  name: test-bucket
+spec:
+  provisioner: cosi-s3
+  releasePolicy: retain
+  anonymousAccessMode: private
+  bucketClassName:
+  permittedNamespaces:
+    - name: default
+      uuid: 1234lsadf
+  protocol:
+    type: s3
+#        azureBlob:
+#          containerName:
+#          storageAccount:
+    s3:
+      endpoint: my.endpoint.com
+      bucketName: my-bucket
+      region: over-there
+      signatureVersion: v4
+  #    gcs:
+  #      bucketName:
+  #      privateKeyName:
+  #      projectId:
+  #      serviceAccount:
+  parameters:
+---
+apiVersion: cosi.io/v1alpha1
+kind: BucketAccessRequest
+metadata:
+  name: my-bucket-access-request
+  namespace: default
+spec:
+  serviceAccountName:
+  accessSecretName:
+  bucket:
+  bucketAccessClassName:
+  bucketAccessName: my-bucket-access
+---
+apiVersion: cosi.io/v1alpha1
+kind: BucketAccess
+metadata:
+  name: my-bucket-access
+spec:
+  bucketAccessRequestName: my-bucket-access-request
+  bucketAccessRequestNamespace: default
+  serviceAccountName:
+  keySecretName: test-secret
+  provisioner: cosi-s3
+  parameters:
+---
+################
+#     Core     #
+################
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: driver
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-secret
+  namespace: driver
+stringData:
+  foo: bar
+  fuz: buz
+---
+kind: Pod
+apiVersion: v1
+metadata:
+  name: csi-cosi-test
+  namespace: default
+spec:
+  restartPolicy: "Never"
+  containers:
+    - image: fedora
+      name: "csi-cosi-test"
+      imagePullPolicy: "Never"
+      command: ["/bin/bash", "-c", "sleep 300"]
+      volumeMounts:
+        - mountPath: /root/.cosi/
+          name: cosi
+  volumes:
+    - name: cosi
+      csi:
+        driver: csi-cosi-adapter
+        volumeAttributes:
+          bucketAccessRequestName: "foo"
+          bucketAccessRequestNamespace: "bar"
