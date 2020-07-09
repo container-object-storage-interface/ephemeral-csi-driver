@@ -11,4 +11,4 @@ require (
 	k8s.io/klog v1.0.0
 )
 
-replace github.com/container-object-storage-interface/api => /Users/jcope/Workspace/github.com/yard-turkey/cosi/api
+replace github.com/container-object-storage-interface/api => /Users/jcope/Workspace/go/src/github.com/container-object-storage-interface/api

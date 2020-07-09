@@ -1,6 +1,8 @@
 ################
-#     CRs     #
+#   COSI CRs   #
 ################
+# Note: These are dummy CRs that (currently) are not managed by a controller,
+#       which is why there are no *Class objects.
 ---
 apiVersion: cosi.io/v1alpha1
 kind: BucketRequest
@@ -8,10 +10,10 @@ metadata:
   name: test-request
   namespace: default
 spec:
-  protocol: s3
-  bucketPrefix: my-bucket
-  bucketClassName: bucket-class
   bucketName: test-bucket
+  bucketPrefix: my-bucket
+  bucketClassName: bucket-class # included to satisfy validation
+  protocol: s3
 ---
 apiVersion: cosi.io/v1alpha1
 kind: Bucket
