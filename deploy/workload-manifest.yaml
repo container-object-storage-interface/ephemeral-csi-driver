@@ -7,7 +7,7 @@
 apiVersion: cosi.io/v1alpha1
 kind: BucketRequest
 metadata:
-  name: test-request
+  name: test-bucket-request
   namespace: default
 spec:
   bucketName: test-bucket
@@ -29,19 +29,11 @@ spec:
       uuid: 1234lsadf
   protocol:
     type: s3
-#        azureBlob:
-#          containerName:
-#          storageAccount:
     s3:
       endpoint: my.endpoint.com
       bucketName: my-bucket
       region: over-there
       signatureVersion: v4
-  #    gcs:
-  #      bucketName:
-  #      privateKeyName:
-  #      projectId:
-  #      serviceAccount:
   parameters:
 ---
 apiVersion: cosi.io/v1alpha1
@@ -92,10 +84,10 @@ metadata:
   name: csi-cosi-test
   namespace: default
 spec:
-  restartPolicy: "Never"
+  restartPolicy: Never
   containers:
     - image: fedora
-      name: "csi-cosi-test"
+      name: csi-cosi-test
       imagePullPolicy: "Never"
       command: ["/bin/bash", "-c", "sleep 300"]
       volumeMounts:
@@ -106,5 +98,5 @@ spec:
       csi:
         driver: csi-cosi-adapter
         volumeAttributes:
-          bucketAccessRequestName: "foo"
-          bucketAccessRequestNamespace: "bar"
+          bucketAccessRequestName: test-bucket-request
+          bucketAccessRequestNamespace: test-bucket-access-request
