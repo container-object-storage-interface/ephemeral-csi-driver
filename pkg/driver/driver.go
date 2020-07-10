@@ -14,7 +14,8 @@ import (
 )
 
 // CosiDriver implements the NodePublishVolume and NodeUnpublishVolume methods
-// of the csi.NodeServer interface
+// of the csi.NodeServer interface and GetPluginCapabilities, GetPluginInfo, and
+// Probe of the IdentityServer interface.
 type CosiDriver struct {
 	name       string
 	nodeID     string
@@ -35,31 +36,53 @@ func NewCosiDriver(nodeId, driverName string, c cs.CosiV1alpha1Interface) *CosiD
 	}
 }
 
+///////////////////////////////////
+// Nodes Services               //
+/////////////////////////////////
+
+// logErr should be called at the interface method scope, prior to returning errors to the gRPC client.
+func logErr(e error) error {
+	klog.Error(e)
+	return e
+}
+
 const protocolFileName string = `protocolConn.json`
 
+// NodePublishVolume is responsible for dereferencing Bucket and BucketAccess objects, extracting connection and credential
+// information, and writing it to files to be mounted to a Pod's filesystem.
+// TODO the code in the current state is not inclusive of all the driver's respsonsibilities.  It's current purpose is
+//   just to test the data path from the csi ephemeral volume to the cluster objects and back to the pod's filesystem.
+//   As such, provisions like polling Get() to account for API races, extracting all relevant data from cluster objects,
+//   and formatting the writable data in a sane way does not exist yet.
 func (d CosiDriver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	klog.Infof("NodePublishVolume: volId: %v, targetPath: %v\n", req.GetVolumeId(), req.GetTargetPath())
 
-	n, ns, err := bucketAccessRequestNameNamespace(req.VolumeContext)
+	name, ns, err := bucketAccessRequestNameNamespace(req.VolumeContext)
 	if err != nil {
 		return nil, err
 	}
 
-	getError := func(t, n string) error { return fmt.Errorf("failed to get %s: %s", t, n)}
+	getError := func(t, n string, e error) error { return fmt.Errorf("failed to get <%s>%s: %v", t, n, e) }
 
-	bar, err := d.cosiClient.BucketAccessRequests(ns).Get(d.ctx, n, v1.GetOptions{})
+	klog.Infof("getting bucketAccessRequest %q", fmt.Sprintf("%s/%s", ns, name))
+	bar, err := d.cosiClient.BucketAccessRequests(ns).Get(d.ctx, name, v1.GetOptions{})
 	if err != nil || bar == nil {
-		return nil, getError("bucketAccessRequest", ns + `\` + n)
+		return nil, logErr(getError("bucketAccessRequest", fmt.Sprintf("%s/%s", ns, name), err))
+	}
+	if len(bar.Spec.BucketRequestName) == 0 {
+		return nil, logErr(fmt.Errorf("bucketAccessRequest.Spec.BucketRequestName unset"))
 	}
 
+	klog.Infof("getting bucketRequest %q", bar.Spec.BucketRequestName)
 	br, err := d.cosiClient.BucketRequests(bar.Namespace).Get(d.ctx, bar.Spec.BucketRequestName, v1.GetOptions{})
 	if err != nil || br == nil {
-		return nil, getError("bucketRequest", bar.Namespace + `\` + bar.Spec.BucketRequestName)
+		return nil, logErr(getError("bucketRequest", fmt.Sprintf("%s/%s", bar.Namespace, bar.Spec.BucketRequestName), err))
 	}
 
+	klog.Infof("getting bucket %q", br.Spec.BucketName)
 	bkt, err := d.cosiClient.Buckets().Get(d.ctx, br.Spec.BucketName, v1.GetOptions{})
-	if err != nil || bkt == nil{
-		return nil, getError("bucket", br.Spec.BucketName)
+	if err != nil || bkt == nil {
+		return nil, logErr(getError("bucket", br.Spec.BucketName, err))
 	}
 
 	var protocolConnection interface{}
@@ -71,28 +94,30 @@ func (d CosiDriver) NodePublishVolume(_ context.Context, req *csi.NodePublishVol
 	case v1alpha1.ProtocolSignatureGCS:
 		protocolConnection = bkt.Spec.Protocol.GCS
 	case "":
-		err = fmt.Errorf("bucket protocol signature missing")
+		err = fmt.Errorf("bucket %q protocol not signature")
 	default:
 		err = fmt.Errorf("unrecognized protocol %q, unable to extract connection data", bkt.Spec.Protocol)
 	}
 	if err != nil {
-		return nil, err
+		return nil, logErr(err)
 	}
+	klog.Infof("bucket %q has protocol %q", bkt.Name, bkt.Spec.Protocol)
 
 	protoData, err := json.Marshal(protocolConnection)
 	if err != nil {
-		return nil, fmt.Errorf("error marshalling protocol: %v", err)
+		return nil, logErr(fmt.Errorf("error marshalling protocol: %v", err))
 	}
 
 	target := filepath.Join(req.TargetPath, protocolFileName)
+	klog.Infof("creating conn file: %s", target)
 	f, err := os.Open(target)
 	if err != nil {
-		return nil, fmt.Errorf("error creating file: %s: %v", target, err)
+		return nil, logErr(fmt.Errorf("error creating file: %s: %v", target, err))
 	}
 	defer f.Close()
 	_, err = f.Write(protoData)
 	if err != nil {
-		return nil, fmt.Errorf("unable to write to file: %v", err)
+		return nil, logErr(fmt.Errorf("unable to write to file: %v", err))
 	}
 	return &csi.NodePublishVolumeResponse{}, nil
 }
@@ -103,7 +128,7 @@ const (
 )
 
 func bucketAccessRequestNameNamespace(volCtx map[string]string) (name, ns string, err error) {
-
+	klog.Info("parsing bucketAccessRequest namespace/name from volume context")
 	e := func(m string) error { return fmt.Errorf("required volume context key unset: %v", m) }
 
 	var ok bool
@@ -111,16 +136,14 @@ func bucketAccessRequestNameNamespace(volCtx map[string]string) (name, ns string
 	if ! ok {
 		return "", "", e(barName)
 	}
+	klog.Infof("got name: %v", name)
 	ns, ok = volCtx[barNamespace]
 	if ! ok {
 		return "", "", e(barNamespace)
 	}
+	klog.Infof("got namespace: %v", ns)
 	return
 }
-
-///////////////////////////////////
-// Nodes Services               //
-/////////////////////////////////
 
 func (d CosiDriver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
 	klog.Infof("NodeUnpublishVolume: volId: %v, targetPath: %v\n", req.GetVolumeId(), req.GetTargetPath())
@@ -130,7 +153,7 @@ func (d CosiDriver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublis
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("unable to remove file %s: %v", target, err)
+		return nil, logErr(fmt.Errorf("unable to remove file %s: %v", target, err))
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
@@ -170,7 +193,7 @@ func (d CosiDriver) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitie
 /////////////////////////////////
 
 func (d CosiDriver) GetPluginInfo(context.Context, *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
-	klog.Infoln("GetPluginInfo")
+	klog.Infoln("GetPluginInfo()")
 	return &csi.GetPluginInfoResponse{
 		Name:          d.name,
 		VendorVersion: "v1alpha1",

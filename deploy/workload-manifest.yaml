@@ -4,7 +4,7 @@
 # Note: These are dummy CRs that (currently) are not managed by a controller,
 #       which is why there are no *Class objects.
 ---
-apiVersion: cosi.io/v1alpha1
+apiVersion: cosi.sigs.k8s.io/v1alpha1
 kind: BucketRequest
 metadata:
   name: test-bucket-request
@@ -15,50 +15,51 @@ spec:
   bucketClassName: bucket-class # included to satisfy validation
   protocol: s3
 ---
-apiVersion: cosi.io/v1alpha1
+apiVersion: cosi.sigs.k8s.io/v1alpha1
 kind: Bucket
 metadata:
   name: test-bucket
 spec:
   provisioner: cosi-s3
   releasePolicy: retain
-  anonymousAccessMode: private
-  bucketClassName:
+  anonymousAccessMode:
+    private: true
+  bucketClassName: ""
   permittedNamespaces:
     - name: default
-      uuid: 1234lsadf
+      uid: 1234lsadf
   protocol:
-    type: s3
+    protocolSignature: s3
     s3:
       endpoint: my.endpoint.com
       bucketName: my-bucket
       region: over-there
-      signatureVersion: v4
-  parameters:
+      signatureVersion: s3v4
+  parameters: {}
 ---
-apiVersion: cosi.io/v1alpha1
+apiVersion: cosi.sigs.k8s.io/v1alpha1
 kind: BucketAccessRequest
 metadata:
   name: my-bucket-access-request
   namespace: default
 spec:
-  serviceAccountName:
-  accessSecretName:
+  serviceAccountName: ""
+  accessSecretName: test-secret
   bucket:
-  bucketAccessClassName:
+  bucketAccessClassName: ""
   bucketAccessName: my-bucket-access
 ---
-apiVersion: cosi.io/v1alpha1
+apiVersion: cosi.sigs.k8s.io/v1alpha1
 kind: BucketAccess
 metadata:
   name: my-bucket-access
 spec:
   bucketAccessRequestName: my-bucket-access-request
   bucketAccessRequestNamespace: default
-  serviceAccountName:
+  serviceAccountName: ""
   keySecretName: test-secret
   provisioner: cosi-s3
-  parameters:
+  parameters: {}
 ---
 ################
 #     Core     #

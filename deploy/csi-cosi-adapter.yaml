@@ -24,13 +24,11 @@ metadata:
   name: csi-cosi
 rules:
   - apiGroups:
-      - cosi.io
+      - cosi.sigs.k8s.io
     resources:
       - "*"
     verbs:
-      - get
-      - list
-      - watch
+      - "*"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
