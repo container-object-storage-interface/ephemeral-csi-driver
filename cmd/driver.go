@@ -16,32 +16,54 @@ limitations under the License.
 
 package cmd
 
-
 import (
-	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
+	"net"
+	"os"
 
-	"github.com/container-object-storage-interface/ephemeral-csi-driver/pkg/controller"
-	id "github.com/container-object-storage-interface/ephemeral-csi-driver/pkg/identity"
-
+	cs "github.com/container-object-storage-interface/api/clientset/typed/storage.k8s.io/v1alpha1"
+	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
+	"google.golang.org/grpc"
+	rest "k8s.io/client-go/rest"
+	"k8s.io/klog"
+
+	id "github.com/container-object-storage-interface/ephemeral-csi-driver/pkg/identity"
+	"github.com/container-object-storage-interface/ephemeral-csi-driver/pkg/node"
 )
 
 func driver(args []string) error {
+
+	if protocol == "unix" {
+		if err := os.RemoveAll(listen); err != nil {
+			klog.Fatalf("could not prepare socket: %v", err)
+		}
+	}
+
 	idServer, err := id.NewIdentityServer(identity, Version, map[string]string{})
 	if err != nil {
 		return err
 	}
 	glog.V(5).Infof("identity server started")
 
-	ctrlServer, err := controller.NewControllerServer(identity, nodeID)
+	config := &rest.Config{}
+
+	client := cs.NewForConfigOrDie(config)
+
+	node := node.NewNodeServer(identity, nodeID, *client)
 	if err != nil {
 		return err
 	}
-	glog.V(5).Infof("controller manager started")
 
-	s := csicommon.NewNonBlockingGRPCServer()
-	s.Start(endpoint, idServer, ctrlServer, nil)
-	s.Wait()
+	srv := grpc.NewServer()
+	csi.RegisterNodeServer(srv, node)
+	csi.RegisterIdentityServer(srv, idServer)
+	l, err := net.Listen(protocol, listen)
+	if err != nil {
+		klog.Fatalf("could not create listener: %v", err)
+	}
+	if err = srv.Serve(l); err != nil {
+		klog.Fatalf("%v", err)
+	}
 
 	return nil
 }
