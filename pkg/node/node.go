@@ -57,28 +57,35 @@ const (
 	barNamespace = "bucketAccessRequestNamespace"
 )
 
-func bucketAccessRequestNameNamespace(volCtx map[string]string) (name, ns string, err error) {
-	klog.Info("parsing bucketAccessRequest namespace/name from volume context")
-	e := func(m string) error { return fmt.Errorf("required volume context key unset: %v", m) }
+func parseValue(key string, ctx map[string]string) (string, error) {
+	value, ok := ctx[key]
+	if !ok {
+		return "", fmt.Errorf("required volume context key unset: %v", key)
+	}
+	klog.Infof("got value: %v", value)
+	return value, nil
+}
 
-	var ok bool
-	name, ok = volCtx[barName]
-	if ! ok {
-		return "", "", e(barName)
+func parseVolumeContext(volCtx map[string]string) (name, ns string, err error) {
+	klog.Info("parsing bucketAccessRequest namespace/name from volume context")
+
+	name, err = parseValue(barName, volCtx)
+	if err != nil {
+		return "", "", err
 	}
-	klog.Infof("got name: %v", name)
-	ns, ok = volCtx[barNamespace]
-	if ! ok {
-		return "", "", e(barNamespace)
+
+	ns, err = parseValue(barNamespace, volCtx)
+	if err != nil {
+		return "", "", err
 	}
-	klog.Infof("got namespace: %v", ns)
+
 	return
 }
 
 func (n NodeServer) NodePublishVolume(ctx context.Context, request *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	klog.Infof("NodePublishVolume: volId: %v, targetPath: %v\n", request.GetVolumeId(), request.GetTargetPath())
 
-	name, ns, err := bucketAccessRequestNameNamespace(request.VolumeContext)
+	name, ns, err := parseVolumeContext(request.VolumeContext)
 	if err != nil {
 		return nil, err
 	}
