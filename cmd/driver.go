@@ -20,11 +20,11 @@ import (
 	"net"
 	"os"
 
-	cs "github.com/container-object-storage-interface/api/clientset/typed/storage.k8s.io/v1alpha1"
+	cs "github.com/container-object-storage-interface/api/clientset/typed/objectstorage.k8s.io/v1alpha1"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
 	"google.golang.org/grpc"
-	rest "k8s.io/client-go/rest"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog"
 
 	id "github.com/container-object-storage-interface/ephemeral-csi-driver/pkg/identity"
@@ -49,6 +49,7 @@ func driver(args []string) error {
 
 	client := cs.NewForConfigOrDie(config)
 
+	node.Initalize(basePath)
 	node := node.NewNodeServer(identity, nodeID, *client)
 	if err != nil {
 		return err

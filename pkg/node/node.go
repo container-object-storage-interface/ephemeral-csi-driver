@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/container-object-storage-interface/api/apis/storage.k8s.io/v1alpha1"
+	"github.com/container-object-storage-interface/api/apis/objectstorage.k8s.io/v1alpha1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog"
+	"k8s.io/utils/mount"
 	"os"
 	"path/filepath"
 
-	cs "github.com/container-object-storage-interface/api/clientset/typed/storage.k8s.io/v1alpha1"
+	cs "github.com/container-object-storage-interface/api/clientset/typed/objectstorage.k8s.io/v1alpha1"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 )
 
@@ -25,7 +28,6 @@ func NewNodeServer(nodeId, driverName string, c cs.ObjectstorageV1alpha1Client) 
 		ctx:        context.Background(),
 	}
 }
-
 
 // logErr should be called at the interface method scope, prior to returning errors to the gRPC client.
 func logErr(e error) error {
@@ -44,13 +46,32 @@ type NodeServer struct {
 }
 
 func (n NodeServer) NodeStageVolume(ctx context.Context, request *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
-	panic("implement me")
+	vID := request.GetVolumeId()
+	stagingTargetPath := request.GetStagingTargetPath()
+
+	if vID == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID missing in request")
+	}
+
+	if err := os.MkdirAll(stagingTargetPath, 0755); err != nil {
+		return nil, status.Errorf(codes.Internal, "Stage Volume Failed: %v", err)
+	}
+
+	dir, err := Provision(vID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "Stage Volume Provision Failed: %v", err)
+	}
+
+	if err := mount.New("").Mount(dir, stagingTargetPath, "", []string{"bind"}); err != nil {
+		return nil, status.Errorf(codes.Internal, "Stage Volume Mount Failed: %v", err)
+	}
+
+	return &csi.NodeStageVolumeResponse{}, nil
 }
 
 func (n NodeServer) NodeUnstageVolume(ctx context.Context, request *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	panic("implement me")
 }
-
 
 const (
 	barName      = "bucketAccessRequestName"
@@ -94,39 +115,42 @@ func (n NodeServer) NodePublishVolume(ctx context.Context, request *csi.NodePubl
 
 	klog.Infof("getting bucketAccessRequest %q", fmt.Sprintf("%s/%s", ns, name))
 	bar, err := n.cosiClient.BucketAccessRequests(ns).Get(n.ctx, name, v1.GetOptions{})
-	if err != nil || bar == nil {
+
+	if err != nil || bar == nil || !bar.Status.AccessGranted {
 		return nil, logErr(getError("bucketAccessRequest", fmt.Sprintf("%s/%s", ns, name), err))
 	}
+
 	if len(bar.Spec.BucketRequestName) == 0 {
 		return nil, logErr(fmt.Errorf("bucketAccessRequest.Spec.BucketRequestName unset"))
 	}
 
 	klog.Infof("getting bucketRequest %q", bar.Spec.BucketRequestName)
 	br, err := n.cosiClient.BucketRequests(bar.Namespace).Get(n.ctx, bar.Spec.BucketRequestName, v1.GetOptions{})
-	if err != nil || br == nil {
+	if err != nil || br == nil || !br.Status.BucketAvailable {
 		return nil, logErr(getError("bucketRequest", fmt.Sprintf("%s/%s", bar.Namespace, bar.Spec.BucketRequestName), err))
 	}
 
 	klog.Infof("getting bucket %q", br.Spec.BucketInstanceName)
 	// is BucketInstanceName the correct field, or should it be BucketClass
 	bkt, err := n.cosiClient.Buckets().Get(n.ctx, br.Spec.BucketInstanceName, v1.GetOptions{})
-	if err != nil || bkt == nil {
+	if err != nil || bkt == nil || !bkt.Status.BucketAvailable {
 		return nil, logErr(getError("bucket", br.Spec.BucketInstanceName, err))
 	}
 
 	var protocolConnection interface{}
-	switch bkt.Spec.Protocol.ProtocolSignature {
-	case v1alpha1.ProtocolSignatureS3:
+	switch bkt.Spec.Protocol.ProtocolName {
+	case v1alpha1.ProtocolNameS3:
 		protocolConnection = bkt.Spec.Protocol.S3
-	case v1alpha1.ProtocolSignatureAzure:
-		protocolConnection = bkt.Spec.Protocol.Azure
-	case v1alpha1.ProtocolSignatureGCS:
+	case v1alpha1.ProtocolNameAzure:
+		protocolConnection = bkt.Spec.Protocol.AzureBlob
+	case v1alpha1.ProtocolNameGCS:
 		protocolConnection = bkt.Spec.Protocol.GCS
 	case "":
 		err = fmt.Errorf("bucket %q protocol not signature")
 	default:
 		err = fmt.Errorf("unrecognized protocol %q, unable to extract connection data", bkt.Spec.Protocol)
 	}
+
 	if err != nil {
 		return nil, logErr(err)
 	}
@@ -183,4 +207,3 @@ func (n NodeServer) NodeGetInfo(ctx context.Context, request *csi.NodeGetInfoReq
 	}
 	return resp, nil
 }
-
