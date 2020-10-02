@@ -70,8 +70,29 @@ func (n NodeServer) NodeStageVolume(ctx context.Context, request *csi.NodeStageV
 }
 
 func (n NodeServer) NodeUnstageVolume(ctx context.Context, request *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
-	panic("implement me")
-}
+	vID := request.GetVolumeId()
+	stagingTargetPath := request.GetStagingTargetPath()
+
+	if vID == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID missing in request")
+	}
+
+	if notMnt, err := mount.IsNotMountPoint(mount.New(""), stagingTargetPath); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+	} else if !notMnt {
+		// Unmounting the image or filesystem.
+		err = mount.New("").Unmount(stagingTargetPath)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "Unstage Unmounting failed: %v", err)
+		}
+	}
+	if err := Unprovision(vID); err != nil {
+		return nil,status.Errorf(codes.Internal, "Unstage Volume Unprovision failed: %v", err)
+	}
+
+	return &csi.NodeUnstageVolumeResponse{}, nil}
 
 const (
 	barName      = "bucketAccessRequestName"

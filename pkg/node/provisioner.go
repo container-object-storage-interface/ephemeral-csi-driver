@@ -35,6 +35,6 @@ func Provision(volumeID string) (string, error) {
 	return filepath.Join(provisioner.Path, volumeID), nil
 }
 
-func Unprovision(path string) error {
-	return os.RemoveAll(path)
+func Unprovision(vId string) error {
+	return os.RemoveAll(filepath.Join(provisioner.Path, vId))
 }
