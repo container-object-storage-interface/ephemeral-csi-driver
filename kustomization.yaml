@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cosi
+commonAnnotations:
+  driver.objectstorage.k8s.io/authors: "The Kubernetes Authors"
+  driver.objectstorage.k8s.io/license: "Apache-2.0"
+commonLabels:
+  driver.objectstorage.k8s.io/version: $(VERSION)
+configMapGenerator:
+  - name: csi-cosi-config
+    env: deploy/csi-cosi.properties
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    generated-by: "kustomize"
+resources:
+  - deploy/workloads.yaml
+  - deploy/ns.yaml
+  - deploy/rbac.yaml
+configurations:
+  - deploy/kustomizeconfig.yaml
+vars:
+  - name: VERSION
+    objref:
+      name: csi-cosi-config
+      kind: ConfigMap
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.VERSION
+  - name: KUBELET_DIR_PATH
+    objref:
+      name: csi-cosi-config
+      kind: ConfigMap
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.KUBELET_DIR_PATH
+  - name: REPOSITORY_ORG
+    objref:
+      name: csi-cosi-config
+      kind: ConfigMap
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.CSI_COSI_REPOSITORY_ORG
+  - name: REPOSITORY_IMAGE
+    objref:
+      name: csi-cosi-config
+      kind: ConfigMap
+      apiVersion: v1
+    fieldref:
+      fieldpath: data.CSI_COSI_REPOSITORY_IMAGE

@@ -3,11 +3,14 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/container-object-storage-interface/api/apis/objectstorage.k8s.io/v1alpha1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
 	"k8s.io/utils/mount"
 	"os"
@@ -19,13 +22,15 @@ import (
 
 var _ csi.NodeServer = &NodeServer{}
 const protocolFileName string = `protocolConn.json`
+var getError = func(t, n string, e error) error { return fmt.Errorf("failed to get <%s>%s: %v", t, n, e) }
 
-func NewNodeServer(nodeId, driverName string, c cs.ObjectstorageV1alpha1Client) csi.NodeServer {
+func NewNodeServer(driverName, nodeID string, c cs.ObjectstorageV1alpha1Client, kube kubernetes.Interface) csi.NodeServer {
 	return &NodeServer{
 		name:       driverName,
-		nodeID:     nodeId,
+		nodeID:     nodeID,
 		cosiClient: c,
 		ctx:        context.Background(),
+		kubeClient: kube,
 	}
 }
 
@@ -42,122 +47,88 @@ type NodeServer struct {
 	name       string
 	nodeID     string
 	cosiClient cs.ObjectstorageV1alpha1Client
+	kubeClient kubernetes.Interface
 	ctx        context.Context
 }
 
+func (n NodeServer) getBAR(barName, barNs string) (*v1alpha1.BucketAccessRequest, error)  {
+	klog.Infof("getting bucketAccessRequest %q", fmt.Sprintf("%s/%s", barNs, barName))
+	bar, err := n.cosiClient.BucketAccessRequests(barNs).Get(n.ctx, barName, metav1.GetOptions{})
+	if err != nil || bar == nil || !bar.Status.AccessGranted {
+		return nil, logErr(getError("bucketAccessRequest", fmt.Sprintf("%s/%s", barNs, barName), err))
+	}
+	if len(bar.Spec.BucketRequestName) == 0 {
+		return nil, logErr(fmt.Errorf("bucketAccessRequest.Spec.BucketRequestName unset"))
+	}
+	return bar, nil
+}
+
+func (n NodeServer) getBA(baName string) (*v1alpha1.BucketAccess, error)  {
+	klog.Infof("getting bucketAccess %q", fmt.Sprintf("%s", baName))
+	ba, err := n.cosiClient.BucketAccesses().Get(n.ctx, baName, metav1.GetOptions{})
+	if err != nil || ba == nil || !ba.Status.AccessGranted {
+		return nil, logErr(getError("bucketAccess", fmt.Sprintf("%s", baName), err))
+	}
+	return ba, nil
+}
+
+func (n NodeServer) getBR(brName, brNs string) (*v1alpha1.BucketRequest, error)  {
+	klog.Infof("getting bucketRequest %q", brName)
+	br, err := n.cosiClient.BucketRequests(brNs).Get(n.ctx, brName, metav1.GetOptions{})
+	if err != nil || br == nil || !br.Status.BucketAvailable {
+		return nil, logErr(getError("bucketRequest", fmt.Sprintf("%s/%s", brNs, brName), err))
+	}
+	return br, nil
+}
+
+func (n NodeServer) getB(bName string)  (*v1alpha1.Bucket, error) {
+	klog.Infof("getting bucket %q", bName)
+	// is BucketInstanceName the correct field, or should it be BucketClass
+	bkt, err := n.cosiClient.Buckets().Get(n.ctx, bName, metav1.GetOptions{})
+	if err != nil || bkt == nil || !bkt.Status.BucketAvailable {
+		return nil, logErr(getError("bucket", bName, err))
+	}
+	return bkt, nil
+}
+
 func (n NodeServer) NodeStageVolume(ctx context.Context, request *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
-	vID := request.GetVolumeId()
-	stagingTargetPath := request.GetStagingTargetPath()
-
-	if vID == "" {
-		return nil, status.Error(codes.InvalidArgument, "volume ID missing in request")
-	}
-
-	if err := os.MkdirAll(stagingTargetPath, 0755); err != nil {
-		return nil, status.Errorf(codes.Internal, "Stage Volume Failed: %v", err)
-	}
-
-	dir, err := Provision(vID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "Stage Volume Provision Failed: %v", err)
-	}
-
-	if err := mount.New("").Mount(dir, stagingTargetPath, "", []string{"bind"}); err != nil {
-		return nil, status.Errorf(codes.Internal, "Stage Volume Mount Failed: %v", err)
-	}
-
-	return &csi.NodeStageVolumeResponse{}, nil
-}
-
-func (n NodeServer) NodeUnstageVolume(ctx context.Context, request *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
-	vID := request.GetVolumeId()
-	stagingTargetPath := request.GetStagingTargetPath()
-
-	if vID == "" {
-		return nil, status.Error(codes.InvalidArgument, "volume ID missing in request")
-	}
-
-	if notMnt, err := mount.IsNotMountPoint(mount.New(""), stagingTargetPath); err != nil {
-		if !os.IsNotExist(err) {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-	} else if !notMnt {
-		// Unmounting the image or filesystem.
-		err = mount.New("").Unmount(stagingTargetPath)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "Unstage Unmounting failed: %v", err)
-		}
-	}
-	if err := Unprovision(vID); err != nil {
-		return nil,status.Errorf(codes.Internal, "Unstage Volume Unprovision failed: %v", err)
-	}
-
-	return &csi.NodeUnstageVolumeResponse{}, nil}
-
-const (
-	barName      = "bucketAccessRequestName"
-	barNamespace = "bucketAccessRequestNamespace"
-)
-
-func parseValue(key string, ctx map[string]string) (string, error) {
-	value, ok := ctx[key]
-	if !ok {
-		return "", fmt.Errorf("required volume context key unset: %v", key)
-	}
-	klog.Infof("got value: %v", value)
-	return value, nil
-}
-
-func parseVolumeContext(volCtx map[string]string) (name, ns string, err error) {
-	klog.Info("parsing bucketAccessRequest namespace/name from volume context")
-
-	name, err = parseValue(barName, volCtx)
-	if err != nil {
-		return "", "", err
-	}
-
-	ns, err = parseValue(barNamespace, volCtx)
-	if err != nil {
-		return "", "", err
-	}
-
-	return
-}
-
-func (n NodeServer) NodePublishVolume(ctx context.Context, request *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
-	klog.Infof("NodePublishVolume: volId: %v, targetPath: %v\n", request.GetVolumeId(), request.GetTargetPath())
+	klog.Infof("NodePublishVolume: volId: %v, targetPath: %v\n", request.GetVolumeId(), request.StagingTargetPath)
 
 	name, ns, err := parseVolumeContext(request.VolumeContext)
 	if err != nil {
 		return nil, err
 	}
 
-	getError := func(t, n string, e error) error { return fmt.Errorf("failed to get <%s>%s: %v", t, n, e) }
 
-	klog.Infof("getting bucketAccessRequest %q", fmt.Sprintf("%s/%s", ns, name))
-	bar, err := n.cosiClient.BucketAccessRequests(ns).Get(n.ctx, name, v1.GetOptions{})
-
-	if err != nil || bar == nil || !bar.Status.AccessGranted {
-		return nil, logErr(getError("bucketAccessRequest", fmt.Sprintf("%s/%s", ns, name), err))
+	pod, err := n.kubeClient.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, logErr(getError("pod", fmt.Sprintf("%s/%s", ns, name), err))
 	}
 
-	if len(bar.Spec.BucketRequestName) == 0 {
-		return nil, logErr(fmt.Errorf("bucketAccessRequest.Spec.BucketRequestName unset"))
+	barName, barNs, err := parsePod(pod, n.name)
+	if err != nil {
+		return nil, err
 	}
-
-	klog.Infof("getting bucketRequest %q", bar.Spec.BucketRequestName)
-	br, err := n.cosiClient.BucketRequests(bar.Namespace).Get(n.ctx, bar.Spec.BucketRequestName, v1.GetOptions{})
-	if err != nil || br == nil || !br.Status.BucketAvailable {
-		return nil, logErr(getError("bucketRequest", fmt.Sprintf("%s/%s", bar.Namespace, bar.Spec.BucketRequestName), err))
+	bar, err := n.getBAR(barName, barNs)
+	if err != nil {
+		return nil, err
 	}
-
-	klog.Infof("getting bucket %q", br.Spec.BucketInstanceName)
-	// is BucketInstanceName the correct field, or should it be BucketClass
-	bkt, err := n.cosiClient.Buckets().Get(n.ctx, br.Spec.BucketInstanceName, v1.GetOptions{})
-	if err != nil || bkt == nil || !bkt.Status.BucketAvailable {
-		return nil, logErr(getError("bucket", br.Spec.BucketInstanceName, err))
+	ba, err := n.getBA(bar.Spec.BucketAccessName)
+	if err != nil {
+		return nil, err
 	}
-
+	br, err := n.getBR(bar.Spec.BucketRequestName, barNs)
+	if err != nil {
+		return nil, err
+	}
+	bkt, err := n.getB(br.Spec.BucketInstanceName)
+	if err != nil {
+		return nil, err
+	}
+	secret, err := n.kubeClient.CoreV1().Secrets(barNs).Get(ctx, ba.Spec.MintedSecretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, logErr(getError("pod", fmt.Sprintf("%s/%s", barNs, ba.Spec.MintedSecretName), err))
+	}
 	var protocolConnection interface{}
 	switch bkt.Spec.Protocol.ProtocolName {
 	case v1alpha1.ProtocolNameS3:
@@ -177,12 +148,16 @@ func (n NodeServer) NodePublishVolume(ctx context.Context, request *csi.NodePubl
 	}
 	klog.Infof("bucket %q has protocol %q", bkt.Name, bkt.Spec.Protocol)
 
-	protoData, err := json.Marshal(protocolConnection)
+	data := make(map[string]interface{})
+	data["protocol"] = protocolConnection
+	data["connection"] = secret.Data
+
+	protoData, err := json.Marshal(data)
 	if err != nil {
 		return nil, logErr(fmt.Errorf("error marshalling protocol: %v", err))
 	}
 
-	target := filepath.Join(request.TargetPath, protocolFileName)
+	target := filepath.Join(request.StagingTargetPath, protocolFileName)
 	klog.Infof("creating conn file: %s", target)
 	f, err := os.Open(target)
 	if err != nil {
@@ -193,6 +168,82 @@ func (n NodeServer) NodePublishVolume(ctx context.Context, request *csi.NodePubl
 	if err != nil {
 		return nil, logErr(fmt.Errorf("unable to write to file: %v", err))
 	}
+	return &csi.NodeStageVolumeResponse{}, nil
+}
+
+func (n NodeServer) NodeUnstageVolume(ctx context.Context, request *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+	panic("implement me")
+}
+
+const (
+	podNameKey      = "csi.storage.k8s.io/pod.name"
+	podNamespaceKey = "csi.storage.k8s.io/pod.namespace"
+	barNameKey      = "bar-name"
+	barNamespaceKey = "bar-namespace"
+)
+
+func parseValue(key string, ctx map[string]string) (string, error) {
+	value, ok := ctx[key]
+	if !ok {
+		return "", fmt.Errorf("required volume context key unset: %v", key)
+	}
+	klog.Infof("got value: %v", value)
+	return value, nil
+}
+
+func parseVolumeContext(volCtx map[string]string) (name, ns string, err error) {
+	klog.Info("parsing bucketAccessRequest namespace/name from volume context")
+
+	name, err = parseValue(podNameKey, volCtx)
+	if err != nil {
+		return "", "", err
+	}
+
+	ns, err = parseValue(podNamespaceKey, volCtx)
+	if err != nil {
+		return "", "", err
+	}
+
+	return
+}
+
+func parsePod(pod *v1.Pod, driverName string) (name, ns string, err error) {
+	klog.Info("parsing bucketAccessRequest namespace/name from pod")
+
+	for _, v := range pod.Spec.Volumes {
+		if v.CSI != nil && v.CSI.Driver == driverName {
+			name, ok := v.CSI.VolumeAttributes[barNameKey]
+			if !ok {
+				return "", "", errors.New("invalid BAR Name")
+			}
+			namespace, ok := v.CSI.VolumeAttributes[barNamespaceKey]
+			if !ok {
+				return "", "", errors.New("invalid BAR Namespace")
+			}
+			return name, namespace, nil
+		}
+	}
+
+	return "", "", nil
+}
+
+func (n NodeServer) NodePublishVolume(ctx context.Context, request *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+	vID := request.GetVolumeId()
+	stagingTargetPath := request.GetStagingTargetPath()
+	targetPath := request.GetTargetPath()
+
+	if vID == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID missing in request")
+	}
+
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		return nil, status.Errorf(codes.Internal, "Stage Volume Failed: %v", err)
+	}
+
+	if err := mount.New("").Mount(stagingTargetPath, targetPath, "", []string{"bind"}); err != nil {
+		return nil, status.Errorf(codes.Internal, "Stage Volume Mount Failed: %v", err)
+	}
+
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 

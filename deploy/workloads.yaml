@@ -1,0 +1,233 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: driver.objectstorage.k8s.io
+  namespace: cosi
+spec:
+  volumeLifecycleModes:
+  - Persistent
+  - Ephemeral
+  podInfoOnMount: false
+  attachRequired: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: csi-cosi-driver
+  namespace: cosi
+data:
+  key: none
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: driver.objectstorage.k8s.io
+provisioner: driver.objectstorage.k8s.io
+parameters:
+  disable.csi.storage.k8s.io/provisioner-secret-name: csi-cosi-driver
+  disable.csi.storage.k8s.io/provisioner-secret-namespace: default
+  disable.csi.storage.k8s.io/fstype: xfs
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: csi-cosi-driver
+  namespace: cosi
+  labels:
+    app: csi-cosi-driver
+spec:
+  selector:
+    app: csi-cosi-driver
+  ports:
+    - name: unused
+      port: 12345
+---
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: csi-cosi-driver
+  namespace: cosi
+spec:
+  selector:
+    matchLabels:
+      app: csi-cosi-driver
+  template:
+    metadata:
+      labels:
+        app: csi-cosi-driver
+    spec:
+      serviceAccountName: csi-cosi-driver
+      containers:
+        - name: node-driver-registrar
+          image: quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
+          args:
+            - --v=5
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=$(KUBELET_DIR_PATH)/plugins/csi-cosi-driver/csi.sock
+          securityContext:
+            # This is necessary only for systems with SELinux, where
+            # non-privileged sidecar containers cannot access unix domain socket
+            # created by privileged CSI driver container.
+            privileged: true
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          volumeMounts:
+          - mountPath: /csi
+            name: socket-dir
+          - mountPath: /registration
+            name: registration-dir
+          terminationMessagePolicy: FallbackToLogsOnError
+          terminationMessagePath: /driver-registrar-termination-log
+        - name: csi-cosi-driver
+          image: $(REPOSITORY_ORG)/$(REPOSITORY_IMAGE):$(VERSION)
+          imagePullPolicy: "Always"
+          args:
+            - "--identity=driver.objectstorage.k8s.io"
+            - "--v=5"
+            - "--listen=$(CSI_ENDPOINT)"
+            - "--node-id=$(KUBE_NODE_NAME)"
+            - "--protocol=unix"
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          terminationMessagePolicy: FallbackToLogsOnError
+          terminationMessagePath: /driver-termination-log
+          ports:
+          - containerPort: 9898
+            name: healthz
+            protocol: TCP
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: $(KUBELET_DIR_PATH)/pods
+              mountPropagation: Bidirectional
+              name: mountpoint-dir
+            - mountPath: $(KUBELET_DIR_PATH)/plugins
+              mountPropagation: Bidirectional
+              name: plugins-dir
+            - mountPath: /dev
+              name: dev-dir
+      volumes:
+        - hostPath:
+            path: $(KUBELET_DIR_PATH)/plugins/csi-cosi-driver
+            type: DirectoryOrCreate
+          name: socket-dir
+        - hostPath:
+            path: $(KUBELET_DIR_PATH)/pods
+            type: DirectoryOrCreate
+          name: mountpoint-dir
+        - hostPath:
+            path: $(KUBELET_DIR_PATH)/plugins_registry
+            type: Directory
+          name: registration-dir
+        - hostPath:
+            path: $(KUBELET_DIR_PATH)/plugins
+            type: Directory
+          name: plugins-dir
+        - hostPath:
+            path: /dev
+            type: Directory
+          name: dev-dir
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: ephemeral-controller-cosi
+  namespace: cosi
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ephemeral-controller-cosi
+  template:
+    metadata:
+      labels:
+        app: ephemeral-controller-cosi
+    spec:
+      serviceAccountName: csi-cosi-driver
+      containers:
+        - name: csi-provisioner
+          image: quay.io/k8scsi/csi-provisioner:v1.2.1
+          args:
+            - "--v=5"
+            - "--timeout=300s"
+            - "--csi-address=$(CSI_ENDPOINT)"
+            - "--enable-leader-election"
+            - "--leader-election-type=leases"
+            - "--feature-gates=Topology=true"
+            - "--strict-topology"
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /dev
+              name: dev-dir
+          terminationMessagePolicy: FallbackToLogsOnError
+          terminationMessagePath: /tmp/controller-provisioner-termination-log
+          ports:
+            - containerPort: 9898
+              name: healthz
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 5
+            httpGet:
+              path: /healthz
+              port: 9898
+            initialDelaySeconds: 10
+            timeoutSeconds: 3
+            periodSeconds: 2
+        - name: ephemeral-controller-cosi
+          image: $(REPOSITORY_ORG)/$(REPOSITORY_IMAGE):$(VERSION)
+          imagePullPolicy: "Always"
+          args:
+            - "--v=5"
+            - "--identity=driver.objectstorage.k8s.io"
+            - "--listen=$(CSI_ENDPOINT)"
+            - "--node-id=$(KUBE_NODE_NAME)"
+            - "--protocol=unix"
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          securityContext:
+            # This is necessary only for systems with SELinux, where
+            # non-privileged sidecar containers cannot access unix domain socket
+            # created by privileged CSI driver container.
+            privileged: true
+          ports:
+          - containerPort: 9898
+            name: healthz
+            protocol: TCP
+          terminationMessagePolicy: FallbackToLogsOnError
+          terminationMessagePath: /tmp/controller-termination-log
+          volumeMounts:
+            - mountPath: /dev
+              name: dev-dir
+            - mountPath: /csi
+              name: socket-dir
+      volumes:
+        - hostPath:
+            path: $(KUBELET_DIR_PATH)/plugins/ephemeral-controller-cosi
+            type: DirectoryOrCreate
+          name: socket-dir
+        - hostPath:
+            path: /dev
+            type: Directory
+          name: dev-dir
