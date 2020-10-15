@@ -72,7 +72,7 @@ func (i *IdentityServer) GetPluginCapabilities(ctx context.Context, req *csi.Get
 	}
 
 	caps := []*csi.PluginCapability{
-		serviceCap(csi.PluginCapability_Service_UNKNOWN),
+		serviceCap(csi.PluginCapability_Service_CONTROLLER_SERVICE),
 	}
 
 	return &csi.GetPluginCapabilitiesResponse{

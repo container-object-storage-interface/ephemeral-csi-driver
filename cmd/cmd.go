@@ -34,6 +34,7 @@ var (
 	nodeID   = ""
 	protocol = ""
 	listen   = ""
+	basePath = ""
 	//endpoint = "unix://csi/csi.sock"
 )
 
@@ -45,11 +46,12 @@ var driverCmd = &cobra.Command{
 	RunE: func(c *cobra.Command, args []string) error {
 		return driver(args)
 	},
+	Version: Version,
 }
 
 func init() {
-	if Version == "" {
-		Version = "dev"
+	if driverCmd.Version == "" {
+		driverCmd.Version = "dev"
 	}
 
 	viper.AutomaticEnv()
@@ -61,8 +63,9 @@ func init() {
 	driverCmd.PersistentFlags().StringVarP(&identity, "identity", "i", identity, "identity of this COSI CSI driver")
 	//driverCmd.PersistentFlags().StringVarP(&endpoint, "endpoint", "e", endpoint, "endpoint at which COSI CSI driver is listening")
 	driverCmd.PersistentFlags().StringVarP(&nodeID, "node-id", "n", nodeID, "identity of the node in which COSI CSI driver is running")
-	driverCmd.PersistentFlags().StringVarP(&listen, "listen", "l", listen, "address of the listening socket for the node server")
-	driverCmd.PersistentFlags().StringVarP(&protocol, "protocol", "p", protocol, "must be one of tcp, tcp4, tcp6, unix, unixpacket")
+	driverCmd.PersistentFlags().StringVarP(&listen, "listen", "l", nodeID, "address of the listening socket for the node server")
+	driverCmd.PersistentFlags().StringVarP(&protocol, "protocol", "p", nodeID, "must be one of tcp, tcp4, tcp6, unix, unixpacket")
+	driverCmd.PersistentFlags().StringVarP(&basePath, "basepath", "p", nodeID, "the base path for the CSI driver")
 
 	driverCmd.PersistentFlags().MarkHidden("alsologtostderr")
 	driverCmd.PersistentFlags().MarkHidden("log_backtrace_at")

@@ -189,39 +189,6 @@ spec:
             initialDelaySeconds: 10
             timeoutSeconds: 3
             periodSeconds: 2
-        - name: ephemeral-controller-cosi
-          image: $(REPOSITORY_ORG)/$(REPOSITORY_IMAGE):$(VERSION)
-          imagePullPolicy: "Always"
-          args:
-            - "--v=5"
-            - "--identity=driver.objectstorage.k8s.io"
-            - "--listen=$(CSI_ENDPOINT)"
-            - "--node-id=$(KUBE_NODE_NAME)"
-            - "--protocol=unix"
-          env:
-            - name: CSI_ENDPOINT
-              value: unix:///csi/csi.sock
-            - name: KUBE_NODE_NAME
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: spec.nodeName
-          securityContext:
-            # This is necessary only for systems with SELinux, where
-            # non-privileged sidecar containers cannot access unix domain socket
-            # created by privileged CSI driver container.
-            privileged: true
-          ports:
-          - containerPort: 9898
-            name: healthz
-            protocol: TCP
-          terminationMessagePolicy: FallbackToLogsOnError
-          terminationMessagePath: /tmp/controller-termination-log
-          volumeMounts:
-            - mountPath: /dev
-              name: dev-dir
-            - mountPath: /csi
-              name: socket-dir
       volumes:
         - hostPath:
             path: $(KUBELET_DIR_PATH)/plugins/ephemeral-controller-cosi

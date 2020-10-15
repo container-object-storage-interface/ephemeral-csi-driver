@@ -16,7 +16,7 @@ type provision struct {
 	Path string
 }
 
-func Initialize(path string) {
+func Initalize(path string) {
 	provisioner.Path = path
 }
 
