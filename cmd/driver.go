@@ -17,13 +17,13 @@ limitations under the License.
 package cmd
 
 import (
-	"net"
+	"github.com/container-object-storage-interface/ephemeral-csi-driver/pkg/controller"
 	"os"
 
 	cs "github.com/container-object-storage-interface/api/clientset/typed/objectstorage.k8s.io/v1alpha1"
-	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/glog"
-	"google.golang.org/grpc"
+	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog"
 
@@ -48,23 +48,14 @@ func driver(args []string) error {
 	config := &rest.Config{}
 
 	client := cs.NewForConfigOrDie(config)
+	kube := kubernetes.NewForConfigOrDie(config)
 
-	node.Initalize(basePath)
-	node := node.NewNodeServer(identity, nodeID, *client)
-	if err != nil {
-		return err
-	}
+	nodeServer := node.NewNodeServer(identity, nodeID, *client, kube)
+	controllerServer, err := controller.NewControllerServer(identity, nodeID)
 
-	srv := grpc.NewServer()
-	csi.RegisterNodeServer(srv, node)
-	csi.RegisterIdentityServer(srv, idServer)
-	l, err := net.Listen(protocol, listen)
-	if err != nil {
-		klog.Fatalf("could not create listener: %v", err)
-	}
-	if err = srv.Serve(l); err != nil {
-		klog.Fatalf("%v", err)
-	}
+	s := csicommon.NewNonBlockingGRPCServer()
+	s.Start(listen, idServer, controllerServer, nodeServer)
+	s.Wait()
 
 	return nil
 }
