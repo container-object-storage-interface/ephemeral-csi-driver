@@ -20,7 +20,6 @@ import (
 	"context"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/golang/glog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -59,23 +58,5 @@ func (i *IdentityServer) Probe(ctx context.Context, req *csi.ProbeRequest) (*csi
 }
 
 func (i *IdentityServer) GetPluginCapabilities(ctx context.Context, req *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
-	serviceCap := func(cap csi.PluginCapability_Service_Type) *csi.PluginCapability {
-		glog.V(5).Infof("Using plugin capability %v", cap)
-
-		return &csi.PluginCapability{
-			Type: &csi.PluginCapability_Service_{
-				Service: &csi.PluginCapability_Service{
-					Type: cap,
-				},
-			},
-		}
-	}
-
-	caps := []*csi.PluginCapability{
-		serviceCap(csi.PluginCapability_Service_CONTROLLER_SERVICE),
-	}
-
-	return &csi.GetPluginCapabilitiesResponse{
-		Capabilities: caps,
-	}, nil
+	return &csi.GetPluginCapabilitiesResponse{}, nil
 }
